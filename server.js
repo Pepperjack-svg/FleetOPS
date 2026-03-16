@@ -31,110 +31,6 @@ function getKeyForServer(server) {
   }
 }
 
-function uint32BE(n) {
-  const b = Buffer.allocUnsafe(4);
-  b.writeUInt32BE(n, 0);
-  return b;
-}
-
-/**
- * Build an OpenSSH private key file (unencrypted) for an ED25519 keypair.
- * ssh2 requires OpenSSH format — it does NOT accept PKCS8 for ED25519.
- */
-function buildOpenSSHPrivateKey(seedBytes, pubKeyBytes) {
-  const keyType = Buffer.from("ssh-ed25519");
-  const none = Buffer.from("none");
-  const magic = Buffer.concat([Buffer.from("openssh-key-v1"), Buffer.alloc(1)]);
-
-  const pubWire = Buffer.concat([
-    uint32BE(keyType.length), keyType,
-    uint32BE(pubKeyBytes.length), pubKeyBytes,
-  ]);
-
-  // OpenSSH ed25519 private = seed (32 bytes) + pubkey (32 bytes)
-  const privFull = Buffer.concat([seedBytes, pubKeyBytes]);
-
-  const checkInt = Math.floor(Math.random() * 0xffffffff);
-  const checkBuf = uint32BE(checkInt);
-
-  const inner = Buffer.concat([
-    checkBuf, checkBuf,
-    uint32BE(keyType.length), keyType,
-    uint32BE(pubKeyBytes.length), pubKeyBytes,
-    uint32BE(privFull.length), privFull,
-    uint32BE(0), // empty comment
-  ]);
-
-  // Pad to 8-byte boundary with sequence 1, 2, 3, ...
-  const padLen = (8 - (inner.length % 8)) % 8;
-  const pad = Buffer.from(Array.from({ length: padLen }, (_, i) => i + 1));
-  const innerPadded = Buffer.concat([inner, pad]);
-
-  const full = Buffer.concat([
-    magic,
-    uint32BE(none.length), none,
-    uint32BE(none.length), none,
-    uint32BE(0),
-    uint32BE(1),
-    uint32BE(pubWire.length), pubWire,
-    uint32BE(innerPadded.length), innerPadded,
-  ]);
-
-  const b64 = full.toString("base64").replace(/.{70}/g, "$&\n");
-  return `-----BEGIN OPENSSH PRIVATE KEY-----\n${b64}\n-----END OPENSSH PRIVATE KEY-----\n`;
-}
-
-/** Called once on startup: ensure the keypair exists in OpenSSH format. */
-function ensureAppKey() {
-  try {
-    const db = getDb(false);
-    const existing = db
-      .prepare("SELECT value FROM app_settings WHERE key = 'private_key'")
-      .get();
-
-    if (existing) {
-      // Migrate: delete PKCS8 keys stored by old code and regenerate
-      if (!existing.value.includes("BEGIN OPENSSH PRIVATE KEY")) {
-        console.log("🔄 Migrating SSH key to OpenSSH format...");
-        db.prepare("DELETE FROM app_settings WHERE key IN ('private_key', 'public_key')").run();
-      } else {
-        db.close();
-        return;
-      }
-    }
-
-    const { generateKeyPairSync } = require("crypto");
-    // Export as DER to extract raw bytes at known offsets:
-    //   PKCS8 DER (48 bytes): seed bytes at [16..47]
-    //   SPKI DER  (44 bytes): pubkey bytes at [13..44]
-    const result = generateKeyPairSync("ed25519", {
-      privateKeyEncoding: { type: "pkcs8", format: "der" },
-      publicKeyEncoding: { type: "spki", format: "der" },
-    });
-
-    const seedBytes = result.privateKey.subarray(16, 48);  // seed at PKCS8 DER offset 16
-    const pubKeyBytes = result.publicKey.subarray(12, 44); // pubkey at SPKI DER offset 12
-
-    const privateKey = buildOpenSSHPrivateKey(seedBytes, pubKeyBytes);
-
-    const keyType = Buffer.from("ssh-ed25519");
-    const pubWire = Buffer.concat([
-      uint32BE(keyType.length), keyType,
-      uint32BE(pubKeyBytes.length), pubKeyBytes,
-    ]);
-    const publicKey = `ssh-ed25519 ${pubWire.toString("base64")} fleetops`;
-
-    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("private_key", privateKey);
-    db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)").run("public_key", publicKey);
-    db.close();
-
-    console.log("✅ FleetOPS ED25519 application keypair generated (OpenSSH format).");
-    console.log("   Go to Settings in the dashboard to copy the public key.");
-  } catch (e) {
-    console.error("Key generation failed:", e.message);
-  }
-}
-
 function updateServerStatus(serverId, status) {
   try {
     const db = getDb(false);
@@ -187,9 +83,6 @@ function parseCookies(cookieHeader) {
 }
 
 app.prepare().then(() => {
-  // Generate the app keypair if this is the first run
-  ensureAppKey();
-
   const httpServer = createServer((req, res) => {
     const parsedUrl = parse(req.url, true);
     handle(req, res, parsedUrl);
@@ -272,9 +165,19 @@ app.prepare().then(() => {
     });
 
     conn.on("error", (err) => {
-      ws.send(
-        JSON.stringify({ type: "error", message: `SSH error: ${err.message}` })
-      );
+      const msg = err.message || "";
+      let friendly = `SSH error: ${msg}`;
+      if (msg.includes("authentication methods failed") || msg.includes("auth")) {
+        friendly =
+          `SSH key authentication failed for ${server.username}@${server.host}. ` +
+          `Ensure the key's public key is in /home/${server.username}/.ssh/authorized_keys ` +
+          `(not /root/.ssh/authorized_keys). Copy the public key from the SSH Keys page.`;
+      } else if (msg.includes("ECONNREFUSED")) {
+        friendly = `Connection refused on ${server.host}:${server.port || 22}. Is SSH running?`;
+      } else if (msg.includes("ETIMEDOUT") || msg.includes("timed out")) {
+        friendly = `Connection to ${server.host} timed out. Check network connectivity.`;
+      }
+      ws.send(JSON.stringify({ type: "error", message: friendly }));
       ws.close();
     });
 

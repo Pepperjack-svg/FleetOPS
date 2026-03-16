@@ -14,14 +14,6 @@ const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
-// App settings table (stores the application-level SSH keypair)
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS app_settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  )
-`).run();
-
 // Users table
 db.prepare(`
   CREATE TABLE IF NOT EXISTS users (
@@ -72,6 +64,18 @@ db.prepare(`
   )
 `).run();
 
+// Profile columns migration
+const userCols = db.prepare("PRAGMA table_info(users)").all() as any[];
+if (!userCols.some((c: any) => c.name === "first_name")) {
+  db.prepare("ALTER TABLE users ADD COLUMN first_name TEXT DEFAULT ''").run();
+}
+if (!userCols.some((c: any) => c.name === "last_name")) {
+  db.prepare("ALTER TABLE users ADD COLUMN last_name TEXT DEFAULT ''").run();
+}
+if (!userCols.some((c: any) => c.name === "avatar")) {
+  db.prepare("ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''").run();
+}
+
 // Migrations for existing databases
 const serverCols = db.prepare("PRAGMA table_info(remote_servers)").all() as any[];
 if (!serverCols.some((c: any) => c.name === "status")) {
@@ -97,22 +101,5 @@ if (!keyCols.some((c: any) => c.name === "public_key")) {
 if (!keyCols.some((c: any) => c.name === "type")) {
   db.prepare("ALTER TABLE ssh_keys ADD COLUMN type TEXT DEFAULT 'ed25519'").run();
 }
-
-// Migrate app_settings keypair into ssh_keys (idempotent)
-try {
-  const appPriv = db.prepare("SELECT value FROM app_settings WHERE key = 'private_key'").get() as any;
-  const appPub = db.prepare("SELECT value FROM app_settings WHERE key = 'public_key'").get() as any;
-  if (appPriv && appPub) {
-    const existing = db.prepare("SELECT id FROM ssh_keys WHERE name = 'FleetOPS App Key'").get() as any;
-    if (!existing) {
-      const res = db.prepare(
-        "INSERT INTO ssh_keys (name, description, private_key, public_key, type) VALUES (?, ?, ?, ?, ?)"
-      ).run("FleetOPS App Key", "Auto-generated application keypair", appPriv.value, appPub.value, "ed25519");
-      db.prepare("UPDATE remote_servers SET ssh_key_id = ? WHERE ssh_key_id IS NULL").run(res.lastInsertRowid);
-    } else {
-      db.prepare("UPDATE remote_servers SET ssh_key_id = ? WHERE ssh_key_id IS NULL").run(existing.id);
-    }
-  }
-} catch {}
 
 export default db;

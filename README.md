@@ -1,36 +1,99 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# FleetOPS
+
+An open-source SSH fleet management platform. Manage, monitor, and terminal into remote servers from a single web dashboard.
+
+## Features
+
+- **SSH Terminal** — Full xterm.js terminal in the browser, streamed over WebSocket
+- **Remote Monitoring** — Real-time CPU, memory, disk, and network stats from remote servers via SSH
+- **SSH Key Management** — Generate ED25519 keypairs or import existing keys; assign per server
+- **Remote Servers** — Add and manage multiple servers with connection status tracking
+- **Authentication** — Session-based login with bcrypt password hashing
+
+## Tech Stack
+
+- **Framework:** Next.js 16 (App Router) + TypeScript
+- **Database:** SQLite via `better-sqlite3` (zero config, file-based)
+- **SSH:** `ssh2` library with persistent connection caching for fast polling
+- **Terminal:** `xterm.js` over WebSocket (custom Node.js server)
+- **UI:** Tailwind CSS v4, Recharts, Lucide icons
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 18+
+- npm
+
+### Install
+
+```bash
+git clone https://github.com/your-username/FleetOPS.git
+cd FleetOPS
+npm install
+```
+
+### Run (development)
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). On first launch you will be prompted to create an admin account.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Run (production)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build
+npm start
+```
 
-## Learn More
+## Adding a Server
 
-To learn more about Next.js, take a look at the following resources:
+1. Go to **SSH Keys** and generate or import an ED25519 keypair.
+2. Copy the public key and add it to `~/.ssh/authorized_keys` on the target server:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+# Run this on the target server as the user FleetOPS will connect as (e.g. pi, ubuntu, root)
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+echo 'ssh-ed25519 AAAA... fleetops' >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+> Make sure you add the key for the correct user. If FleetOPS connects as `pi`, the key must be in `/home/pi/.ssh/authorized_keys`, not `/root/.ssh/authorized_keys`.
 
-## Deploy on Vercel
+3. Go to **Remote Servers**, click **Add Server**, and assign the SSH key.
+4. Click **Terminal** to open a live shell, or **Monitor** to view system stats.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Project Structure
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+FleetOPS/
+├── app/
+│   ├── api/
+│   │   ├── login/          # POST login
+│   │   ├── logout/         # POST/GET logout (GET clears cookie + redirects)
+│   │   ├── monitor/        # GET local stats (systeminformation)
+│   │   │   └── remote/     # GET remote stats via SSH
+│   │   ├── register/       # POST register first user
+│   │   ├── servers/        # CRUD remote servers
+│   │   │   └── test/       # POST test SSH connection
+│   │   ├── ssh/connect/    # POST one-shot SSH auth test
+│   │   └── sshkeys/        # CRUD SSH keys + key generation
+│   └── dashboard/
+│       ├── monitor/        # Monitoring page
+│       ├── remoteservers/  # Servers list + inline terminal
+│       └── sshkeys/        # SSH key management
+├── components/
+│   ├── Sidebar.tsx
+│   └── Terminal.tsx        # xterm.js WebSocket terminal
+├── lib/
+│   ├── auth.ts             # Session management
+│   └── db.ts               # SQLite schema + migrations
+├── server.js               # Custom Node.js server (WebSocket + SSH)
+└── middleware.ts            # Route protection
+```
+
+## License
+
+MIT

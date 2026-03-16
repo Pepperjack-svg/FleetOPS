@@ -164,7 +164,7 @@ export default function SSHConsole({ server, onClose }: TerminalProps) {
               href="/dashboard/sshkeys"
               className="text-xs text-yellow-400 hover:underline"
             >
-              Check SSH Keys →
+              SSH Keys →
             </a>
           )}
           {onClose && (

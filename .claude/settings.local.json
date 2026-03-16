@@ -3,7 +3,12 @@
     "allow": [
       "Bash(cd:*)",
       "Bash(node -e \":*)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(taskkill /F /IM node.exe)",
+      "Bash(cmd /c \"taskkill /F /IM node.exe\")",
+      "Bash(cmd /c \"netstat -ano | findstr :3000\")",
+      "Bash(cmd /c \"for /f \"\"tokens=5\"\" %a in \\(''netstat -aon ^| findstr :3000 ^| findstr LISTENING''\\) do taskkill /F /PID %a\")",
+      "Bash(cmd /c \"netstat -ano\")"
     ]
   }
 }

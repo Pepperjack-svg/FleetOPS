@@ -1,7 +1,19 @@
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
+import { validateSession } from "@/lib/auth";
+import { cookies } from "next/headers";
+
+async function requireAuth() {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("session")?.value;
+  if (!token) return null;
+  return validateSession(token);
+}
 
 export async function GET() {
+  const user = await requireAuth();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const servers = db.prepare(`
       SELECT r.*, s.name as ssh_key_name, s.type as ssh_key_type
@@ -16,6 +28,9 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const user = await requireAuth();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const { name, description, host, username, port, ssh_key_id } = await req.json();
     const result = db.prepare(
@@ -29,6 +44,9 @@ export async function POST(req: Request) {
 }
 
 export async function PUT(req: Request) {
+  const user = await requireAuth();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const { id, name, description, host, username, port, ssh_key_id } = await req.json();
     if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
@@ -44,6 +62,9 @@ export async function PUT(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const user = await requireAuth();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const { id } = await req.json();
     db.prepare("DELETE FROM remote_servers WHERE id = ?").run(id);

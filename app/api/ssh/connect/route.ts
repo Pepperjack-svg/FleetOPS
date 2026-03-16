@@ -2,8 +2,15 @@ import { NextResponse } from "next/server";
 import { Client } from "ssh2";
 import db from "@/lib/db";
 import { createPrivateKey } from "crypto";
+import { validateSession } from "@/lib/auth";
+import { cookies } from "next/headers";
 
 export async function POST(req: Request) {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("session")?.value;
+  if (!token) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+  if (!validateSession(token)) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+
   try {
     const { host, port, username, password, ssh_key_id, passphrase } = await req.json();
 
