@@ -1,12 +1,14 @@
 {
+  "id": "/dashboard",
   "name": "FleetOPS",
   "short_name": "FleetOPS",
   "description": "The Open Source SSH Fleet Management Platform",
   "start_url": "/dashboard",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#0a0a0a",
   "theme_color": "#0a0a0a",
-  "orientation": "portrait-primary",
+  "orientation": "any",
   "categories": ["productivity", "utilities"],
   "icons": [
     {
@@ -19,25 +21,45 @@
       "src": "/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
     },
     {
       "src": "/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ],
   "shortcuts": [
     {
       "name": "Dashboard",
       "url": "/dashboard",
-      "description": "Fleet Dashboard"
+      "description": "Fleet Dashboard",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
     },
     {
       "name": "Monitoring",
       "url": "/dashboard/monitor",
-      "description": "Server Monitoring"
+      "description": "Server Monitoring",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Local Devices",
+      "url": "/dashboard/localdevices",
+      "description": "Connect Local Devices via Tailscale",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
     }
   ]
 }

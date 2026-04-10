@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FleetOPS — Offline</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0a0a0a;
+      color: #fff;
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .card {
+      text-align: center;
+      max-width: 320px;
+    }
+    .icon {
+      width: 56px;
+      height: 56px;
+      border-radius: 14px;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.5rem;
+    }
+    .icon svg { opacity: 0.7; }
+    h1 { font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; }
+    p { font-size: 0.875rem; color: #737373; line-height: 1.6; }
+    button {
+      margin-top: 1.5rem;
+      background: #fff;
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      padding: 0.5rem 1.25rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #e5e5e5; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">
+      <svg width="24" height="24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+        <path d="M1 6l5 5m0 0l5-5m-5 5V3"/>
+        <rect x="2" y="14" width="20" height="7" rx="2"/>
+        <path d="M6 18h.01M10 18h.01"/>
+      </svg>
+    </div>
+    <h1>You're offline</h1>
+    <p>FleetOPS needs a connection to reach your servers. Check your network and try again.</p>
+    <button onclick="location.reload()">Retry</button>
+  </div>
+</body>
+</html>

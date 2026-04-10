@@ -3,6 +3,25 @@
 import { useEffect, useState } from "react";
 import { Download, Share, X } from "lucide-react";
 
+const DISMISS_KEY = "pwa-banner-dismissed";
+const DISMISS_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+function isDismissed(): boolean {
+  try {
+    const ts = localStorage.getItem(DISMISS_KEY);
+    if (!ts) return false;
+    return Date.now() - Number(ts) < DISMISS_TTL;
+  } catch {
+    return false;
+  }
+}
+
+function saveDismiss() {
+  try {
+    localStorage.setItem(DISMISS_KEY, String(Date.now()));
+  } catch {}
+}
+
 export default function PWARegister() {
   const [installEvent, setInstallEvent] = useState<any>(null);
   const [showBanner, setShowBanner] = useState(false);
@@ -19,19 +38,18 @@ export default function PWARegister() {
     // Already installed as standalone PWA — don't show banner
     if (window.matchMedia("(display-mode: standalone)").matches) return;
 
-    // Detect iOS (Safari doesn't support beforeinstallprompt)
+    // Already dismissed recently — don't show
+    if (isDismissed()) return;
+
     const ios =
       /iphone|ipad|ipod/i.test(navigator.userAgent) ||
       (/macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 
     if (ios) {
-      // Show iOS manual install guide after a short delay
-      const t = setTimeout(() => setShowBanner(true), 3000);
-      setIsIOS(true);
+      const t = setTimeout(() => { setIsIOS(true); setShowBanner(true); }, 3000);
       return () => clearTimeout(t);
     }
 
-    // Android / Chrome — capture the native install prompt
     const handler = (e: Event) => {
       e.preventDefault();
       setInstallEvent(e);
@@ -50,6 +68,11 @@ export default function PWARegister() {
       setShowBanner(false);
       setInstallEvent(null);
     }
+  };
+
+  const handleDismiss = () => {
+    saveDismiss();
+    setShowBanner(false);
   };
 
   if (!showBanner) return null;
@@ -80,7 +103,7 @@ export default function PWARegister() {
         </div>
         <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
           <button
-            onClick={() => setShowBanner(false)}
+            onClick={handleDismiss}
             className="text-neutral-500 hover:text-neutral-300 transition p-0.5"
             aria-label="Dismiss"
           >

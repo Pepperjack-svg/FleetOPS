@@ -14,6 +14,7 @@ import {
   Trash2,
   ShieldCheck,
   Server,
+  Wifi,
 } from "lucide-react";
 import SSHConsole from "@/components/Terminal";
 
@@ -116,6 +117,11 @@ function ServerCard({
             <div className="flex items-center gap-2 flex-wrap">
               <p className="font-semibold text-white text-sm">{server.name}</p>
               <StatusBadge status={server.status} />
+              {/^100\./.test(server.host) && (
+                <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-purple-900/40 border border-purple-800/60 text-purple-400 font-medium">
+                  <Wifi size={9} /> Tailscale
+                </span>
+              )}
             </div>
             <p className="text-xs text-neutral-500 font-mono mt-0.5">
               {server.username}@{server.host}:{server.port || 22}
@@ -326,12 +332,26 @@ export default function RemoteServersPage() {
 
       {/* Cards grid */}
       {servers.length === 0 ? (
-        <div className="border border-dashed border-neutral-700 rounded-xl py-20 text-center">
+        <div className="border border-dashed border-neutral-700 rounded-xl py-16 text-center px-4">
           <Server size={32} className="text-neutral-600 mx-auto mb-3" />
           <p className="text-gray-400 font-medium">No servers added yet</p>
-          <p className="text-gray-600 text-sm mt-1">
-            Click &quot;Add Server&quot; to get started
+          <p className="text-gray-600 text-sm mt-1 mb-5">
+            Add a cloud server or connect a local device like a Raspberry Pi
           </p>
+          <div className="flex items-center justify-center gap-3 flex-wrap">
+            <button
+              onClick={resetForm}
+              className="inline-flex items-center gap-2 bg-white text-black text-sm font-medium px-4 py-2 rounded-lg hover:bg-gray-100 transition"
+            >
+              <Plus size={14} /> Add Server
+            </button>
+            <a
+              href="/dashboard/localdevices"
+              className="inline-flex items-center gap-2 border border-neutral-700 text-neutral-300 text-sm font-medium px-4 py-2 rounded-lg hover:border-purple-700 hover:text-purple-400 transition"
+            >
+              <Wifi size={14} /> Connect Local Device
+            </a>
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">

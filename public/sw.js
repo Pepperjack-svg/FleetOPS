@@ -1,8 +1,7 @@
-const CACHE = "fleetops-v1";
+const CACHE = "fleetops-v2";
 
-// Assets to pre-cache for offline shell
 const PRECACHE = [
-  "/login",
+  "/offline.html",
   "/favicon.ico",
   "/manifest.json",
 ];
@@ -27,12 +26,12 @@ self.addEventListener("fetch", (e) => {
   const { request } = e;
   const url = new URL(request.url);
 
-  // Never intercept API calls or WebSocket upgrades — always go to network
+  // Never intercept API calls or WebSocket upgrades
   if (url.pathname.startsWith("/api/") || request.headers.get("upgrade") === "websocket") {
     return;
   }
 
-  // Network-first for navigation (pages) — fall back to cache if offline
+  // Network-first for navigation — fall back to cached page, then offline.html
   if (request.mode === "navigate") {
     e.respondWith(
       fetch(request)
@@ -41,12 +40,14 @@ self.addEventListener("fetch", (e) => {
           caches.open(CACHE).then((c) => c.put(request, clone));
           return res;
         })
-        .catch(() => caches.match(request).then((r) => r || caches.match("/login")))
+        .catch(() =>
+          caches.match(request).then((r) => r || caches.match("/offline.html"))
+        )
     );
     return;
   }
 
-  // Cache-first for static assets (JS, CSS, fonts, images)
+  // Cache-first for static assets (hashed filenames — safe to cache forever)
   if (
     url.pathname.startsWith("/_next/static/") ||
     url.pathname.startsWith("/icons/") ||

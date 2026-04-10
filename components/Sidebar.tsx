@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import {
-  LayoutDashboard, Activity, Server, Key,
+  LayoutDashboard, Activity, Server, Key, Network,
   ChevronLeft, ChevronRight, LogOut, User, ChevronUp, X,
 } from "lucide-react";
 import Link from "next/link";
@@ -16,6 +16,7 @@ const NAV_HOME = [
 const NAV_MANAGE = [
   { href: "/dashboard/remoteservers", icon: Server, label: "Remote Servers", exact: false },
   { href: "/dashboard/sshkeys", icon: Key, label: "SSH Keys", exact: false },
+  { href: "/dashboard/localdevices", icon: Network, label: "Local Devices", exact: false },
 ];
 
 function NavItem({ href, icon: Icon, label, collapsed, active }: {
