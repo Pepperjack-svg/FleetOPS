@@ -1,4 +1,6 @@
-// Custom Next.js server with WebSocket support for SSH terminal streaming
+// FleetOPS — custom Next.js server with WebSocket SSH terminal
+// Terminal architecture: one ssh2 Client per server, shared across all sessions.
+// One TCP connection + one auth handshake per server — fail2ban can never trigger.
 const { createServer } = require("http");
 const { parse } = require("url");
 const next = require("next");
@@ -13,6 +15,8 @@ const port = parseInt(process.env.PORT || "3000", 10);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
+// ── DB helpers ────────────────────────────────────────────────────────────────
+
 function getDb(readonly = false) {
   const Database = require("better-sqlite3");
   const dbPath = path.join(process.cwd(), "db", "fleetops.db");
@@ -20,24 +24,19 @@ function getDb(readonly = false) {
 }
 
 function getKeyForServer(server) {
-  if (!server || !server.ssh_key_id) return null;
+  if (!server?.ssh_key_id) return null;
   try {
     const db = getDb(true);
     const row = db.prepare("SELECT private_key FROM ssh_keys WHERE id = ?").get(server.ssh_key_id);
     db.close();
     return row?.private_key || null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 function updateServerStatus(serverId, status) {
   try {
     const db = getDb(false);
-    db.prepare("UPDATE remote_servers SET status = ? WHERE id = ?").run(
-      status,
-      serverId
-    );
+    db.prepare("UPDATE remote_servers SET status = ? WHERE id = ?").run(status, serverId);
     db.close();
   } catch {}
 }
@@ -45,31 +44,23 @@ function updateServerStatus(serverId, status) {
 function validateSession(token) {
   try {
     const db = getDb(true);
-    const session = db
-      .prepare(
-        `SELECT u.id, u.email FROM sessions s
-         JOIN users u ON s.user_id = u.id
-         WHERE s.token = ? AND datetime(s.expires_at) > datetime('now')`
-      )
-      .get(token);
+    const session = db.prepare(
+      `SELECT u.id, u.email FROM sessions s
+       JOIN users u ON s.user_id = u.id
+       WHERE s.token = ? AND datetime(s.expires_at) > datetime('now')`
+    ).get(token);
     db.close();
     return session || null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 function getServerById(serverId) {
   try {
     const db = getDb(true);
-    const server = db
-      .prepare("SELECT * FROM remote_servers WHERE id = ?")
-      .get(serverId);
+    const server = db.prepare("SELECT * FROM remote_servers WHERE id = ?").get(serverId);
     db.close();
     return server || null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 function parseCookies(cookieHeader) {
@@ -82,153 +73,201 @@ function parseCookies(cookieHeader) {
   );
 }
 
+function friendlySSHError(err, server) {
+  const msg = err?.message || "";
+  if (msg.includes("authentication methods failed") || msg.includes("auth")) {
+    return `Auth failed for ${server.username}@${server.host}. ` +
+      `Make sure the FleetOPS public key is in ~/.ssh/authorized_keys on the server.`;
+  }
+  if (msg.includes("ECONNREFUSED")) return `Connection refused on ${server.host}:${server.port || 22}. Is SSH running?`;
+  if (msg.includes("ETIMEDOUT") || msg.includes("timed out")) return `Connection to ${server.host} timed out.`;
+  if (msg.includes("EHOSTUNREACH")) return `Host ${server.host} is unreachable. Check the IP and network.`;
+  return `SSH error: ${msg}`;
+}
+
+// ── SSH connection pool ───────────────────────────────────────────────────────
+// One persistent ssh2 Client per server — shared across all terminal sessions.
+// Sessions open shell CHANNELS on the existing connection.
+// Result: one TCP handshake + one auth per server. fail2ban-proof.
+
+/**
+ * @type {Map<number, {
+ *   client: import("ssh2").Client,
+ *   ready: boolean,
+ *   activeSessions: number,
+ *   pendingResolvers: Array<{resolve: Function, reject: Function}>
+ * }>}
+ */
+const sshPool = new Map();
+
+function getPooledConn(server, privateKey) {
+  return new Promise((resolve, reject) => {
+    const existing = sshPool.get(server.id);
+
+    // Reuse live connection — open another channel, zero auth cost
+    if (existing?.ready) {
+      return resolve(existing.client);
+    }
+
+    // Already connecting — queue behind the in-flight auth
+    if (existing && !existing.ready) {
+      existing.pendingResolvers.push({ resolve, reject });
+      return;
+    }
+
+    // No connection — create one
+    if (!privateKey) {
+      return reject(new Error("No SSH key assigned to this server."));
+    }
+
+    const conn = new Client();
+    const entry = { client: conn, ready: false, activeSessions: 0, pendingResolvers: [{ resolve, reject }] };
+    sshPool.set(server.id, entry);
+
+    conn.on("ready", () => {
+      entry.ready = true;
+      updateServerStatus(server.id, "connected");
+      // Resolve all waiters
+      for (const { resolve: res } of entry.pendingResolvers) res(conn);
+      entry.pendingResolvers = [];
+    });
+
+    conn.on("error", (err) => {
+      entry.ready = false;
+      sshPool.delete(server.id);
+      for (const { reject: rej } of entry.pendingResolvers) rej(err);
+      entry.pendingResolvers = [];
+      // Status will be updated per-session on error send
+    });
+
+    conn.on("close", () => {
+      entry.ready = false;
+      sshPool.delete(server.id);
+      if (entry.activeSessions === 0) {
+        updateServerStatus(server.id, "disconnected");
+      }
+    });
+
+    conn.connect({
+      host: server.host,
+      port: server.port || 22,
+      username: server.username,
+      privateKey,
+      readyTimeout: 20000,
+      keepaliveInterval: 30000,  // ping every 30s — keeps connection alive indefinitely
+      keepaliveCountMax: 5,      // 5 missed pings before dropping (2.5 min grace)
+    });
+  });
+}
+
+// Evict a server's connection from pool (e.g. after auth failure)
+function evictPool(serverId) {
+  const entry = sshPool.get(serverId);
+  if (entry) {
+    try { entry.client.end(); } catch {}
+    sshPool.delete(serverId);
+  }
+}
+
+// ── WebSocket terminal handler ────────────────────────────────────────────────
+
 app.prepare().then(() => {
   const httpServer = createServer((req, res) => {
-    const parsedUrl = parse(req.url, true);
-    handle(req, res, parsedUrl);
+    handle(req, res, parse(req.url, true));
   });
 
   const wss = new WebSocketServer({ noServer: true });
 
-  wss.on("connection", (ws, req, context) => {
+  wss.on("connection", async (ws, _req, context) => {
     const { server } = context;
-    const appPrivateKey = getKeyForServer(server);
+    const privateKey = getKeyForServer(server);
+    let stream = null;
+    let poolEntry = null;
 
-    const conn = new Client();
-    let sshStream = null;
-    let sshReady = false;
+    const send = (type, payload) => {
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ type, ...payload }));
+      }
+    };
 
-    const connectSSH = () => {
-      if (!appPrivateKey) {
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            message:
-              "No SSH key assigned to this server. Go to Remote Servers to assign a key.",
-          })
-        );
+    if (!privateKey) {
+      send("error", { message: "No SSH key assigned. Go to Remote Servers → assign an SSH key first." });
+      ws.close();
+      return;
+    }
+
+    send("status", { status: "connecting", message: `Connecting to ${server.name}…` });
+
+    let conn;
+    try {
+      conn = await getPooledConn(server, privateKey);
+      poolEntry = sshPool.get(server.id);
+      if (poolEntry) poolEntry.activeSessions++;
+    } catch (err) {
+      send("error", { message: friendlySSHError(err, server) });
+      ws.close();
+      return;
+    }
+
+    // Open a shell channel on the shared connection
+    conn.shell({ term: "xterm-256color", cols: 120, rows: 40 }, (err, s) => {
+      if (err) {
+        send("error", { message: `Shell error: ${err.message}` });
         ws.close();
         return;
       }
 
-      conn.connect({
-        host: server.host,
-        port: server.port || 22,
-        username: server.username,
-        privateKey: appPrivateKey,
-        readyTimeout: 20000,
+      stream = s;
+      send("status", { status: "connected", message: `Connected to ${server.name} (${server.host})` });
+
+      stream.on("data", (data) => {
+        send("data", { data: data.toString("base64") });
       });
-    };
 
-    conn.on("ready", () => {
-      sshReady = true;
-      updateServerStatus(server.id, "connected");
-      ws.send(
-        JSON.stringify({
-          type: "status",
-          status: "connected",
-          message: `Connected to ${server.name} (${server.host})`,
-        })
-      );
+      stream.stderr.on("data", (data) => {
+        send("data", { data: data.toString("base64") });
+      });
 
-      conn.shell({ term: "xterm-256color", cols: 220, rows: 50 }, (err, stream) => {
-        if (err) {
-          ws.send(
-            JSON.stringify({ type: "error", message: `Shell error: ${err.message}` })
-          );
-          ws.close();
-          return;
-        }
-
-        sshStream = stream;
-
-        stream.on("data", (data) => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ type: "data", data: data.toString("base64") }));
-          }
-        });
-
-        stream.stderr.on("data", (data) => {
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ type: "data", data: data.toString("base64") }));
-          }
-        });
-
-        stream.on("close", () => {
-          ws.send(
-            JSON.stringify({ type: "status", status: "closed", message: "SSH session ended" })
-          );
-          ws.close();
-          conn.end();
-        });
+      stream.on("close", () => {
+        send("status", { status: "closed", message: "Shell session ended" });
+        ws.close();
       });
     });
 
-    conn.on("error", (err) => {
-      const msg = err.message || "";
-      let friendly = `SSH error: ${msg}`;
-      if (msg.includes("authentication methods failed") || msg.includes("auth")) {
-        friendly =
-          `SSH key authentication failed for ${server.username}@${server.host}. ` +
-          `Ensure the key's public key is in /home/${server.username}/.ssh/authorized_keys ` +
-          `(not /root/.ssh/authorized_keys). Copy the public key from the SSH Keys page.`;
-      } else if (msg.includes("ECONNREFUSED")) {
-        friendly = `Connection refused on ${server.host}:${server.port || 22}. Is SSH running?`;
-      } else if (msg.includes("ETIMEDOUT") || msg.includes("timed out")) {
-        friendly = `Connection to ${server.host} timed out. Check network connectivity.`;
-      }
-      ws.send(JSON.stringify({ type: "error", message: friendly }));
-      ws.close();
-    });
-
+    // Browser → server
     ws.on("message", (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
-
-        if (msg.type === "resize" && sshStream) {
-          sshStream.setWindow(msg.rows, msg.cols, 0, 0);
-          return;
-        }
-
-        if (msg.type === "data" && sshStream) {
-          sshStream.write(Buffer.from(msg.data, "base64"));
-          return;
+        if (msg.type === "resize" && stream) {
+          stream.setWindow(msg.rows, msg.cols, 0, 0);
+        } else if (msg.type === "data" && stream) {
+          stream.write(Buffer.from(msg.data, "base64"));
         }
       } catch {
-        if (sshStream) sshStream.write(raw.toString());
+        if (stream) stream.write(raw.toString());
       }
     });
 
+    // Browser disconnected
     ws.on("close", () => {
-      if (sshStream) sshStream.end();
-      conn.end();
-      updateServerStatus(server.id, "disconnected");
+      if (stream) { try { stream.end(); } catch {} stream = null; }
+      if (poolEntry) {
+        poolEntry.activeSessions = Math.max(0, poolEntry.activeSessions - 1);
+        // Don't close the underlying SSH connection — keep it alive for future sessions.
+        // keepaliveInterval in conn.connect() maintains the TCP connection automatically.
+      }
     });
-
-    connectSSH();
   });
+
+  // ── HTTP upgrade handler ──────────────────────────────────────────────────
 
   httpServer.on("upgrade", (req, socket, head) => {
     const parsedUrl = parse(req.url, true);
+    if (parsedUrl.pathname !== "/api/ws/terminal") return;
 
-    if (parsedUrl.pathname !== "/api/ws/terminal") {
-      return;
-    }
-
-    console.log("[WS UPGRADE] Request to /api/ws/terminal received");
     const cookies = parseCookies(req.headers.cookie);
-    const sessionToken = cookies["session"];
-
-    if (!sessionToken) {
-      console.log("[WS UPGRADE] No session token found in cookies.");
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-
-    const user = validateSession(sessionToken);
+    const user = validateSession(cookies["session"]);
     if (!user) {
-      console.log("[WS UPGRADE] Invalid session token.");
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
@@ -236,7 +275,6 @@ app.prepare().then(() => {
 
     const serverId = parsedUrl.query.serverId;
     if (!serverId) {
-      console.log("[WS UPGRADE] No serverId query param.");
       socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
       socket.destroy();
       return;
@@ -244,13 +282,11 @@ app.prepare().then(() => {
 
     const server = getServerById(serverId);
     if (!server) {
-      console.log("[WS UPGRADE] Server not found for id:", serverId);
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();
       return;
     }
 
-    console.log("[WS UPGRADE] Session valid, handing over to wss...");
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req, { server, user });
     });
@@ -258,8 +294,7 @@ app.prepare().then(() => {
 
   httpServer.listen(port, () => {
     console.log(`> FleetOPS ready on http://${hostname}:${port}`);
-    console.log(
-      `> WebSocket terminal at ws://${hostname}:${port}/api/ws/terminal`
-    );
+    console.log(`> WebSocket terminal: ws://${hostname}:${port}/api/ws/terminal`);
+    console.log(`> SSH pool: one connection per server, shared across all sessions`);
   });
 });
