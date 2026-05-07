@@ -15,6 +15,11 @@ import {
   ShieldCheck,
   Server,
   Wifi,
+  Bot,
+  Copy,
+  Check,
+  X,
+  Zap,
 } from "lucide-react";
 import SSHConsole from "@/components/Terminal";
 
@@ -30,6 +35,8 @@ interface RemoteServer {
   ssh_key_id?: number | null;
   ssh_key_name?: string | null;
   ssh_key_type?: string | null;
+  agent_mode?: number;
+  agent_token?: string | null;
 }
 
 interface SSHKey {
@@ -103,6 +110,46 @@ function ServerCard({
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  const [showAgent, setShowAgent] = useState(false);
+  const [agentToken, setAgentToken] = useState<string | null>(server.agent_token ?? null);
+  const [agentMode, setAgentMode] = useState<boolean>(!!(server.agent_mode));
+  const [copiedCmd, setCopiedCmd] = useState(false);
+
+  const enableAgent = async () => {
+    const res = await fetch("/api/agents/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverId: server.id }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setAgentToken(data.token);
+      setAgentMode(true);
+      setShowAgent(true);
+    }
+  };
+
+  const disableAgent = async () => {
+    await fetch("/api/agents/register", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverId: server.id }),
+    });
+    setAgentToken(null);
+    setAgentMode(false);
+    setShowAgent(false);
+  };
+
+  const installCmd = agentToken
+    ? `curl -fsSL ${typeof window !== "undefined" ? window.location.origin : ""}/agent.sh | sudo FLEETOPS_URL=${typeof window !== "undefined" ? window.location.origin : ""} FLEETOPS_TOKEN=${agentToken} bash`
+    : "";
+
+  const copyCmd = () => {
+    navigator.clipboard.writeText(installCmd);
+    setCopiedCmd(true);
+    setTimeout(() => setCopiedCmd(false), 2000);
+  };
+
   return (
     <div className={`bg-neutral-900 border rounded-xl flex flex-col transition-colors ${
       showTerminal ? "border-neutral-600" : "border-neutral-800 hover:border-neutral-700"
@@ -117,6 +164,11 @@ function ServerCard({
             <div className="flex items-center gap-2 flex-wrap">
               <p className="font-semibold text-white text-sm">{server.name}</p>
               <StatusBadge status={server.status} />
+              {agentMode && (
+                <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-900/40 border border-emerald-800/60 text-emerald-400 font-medium">
+                  <Zap size={8} /> Agent
+                </span>
+              )}
               {/^100\./.test(server.host) && (
                 <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-purple-900/40 border border-purple-800/60 text-purple-400 font-medium">
                   <Wifi size={9} /> Tailscale
@@ -137,7 +189,7 @@ function ServerCard({
             <MoreVertical size={15} />
           </button>
           {menuOpen && (
-            <div className="absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded-xl shadow-2xl z-20 w-44 py-1 text-sm overflow-hidden">
+            <div className="absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded-xl shadow-2xl z-20 w-48 py-1 text-sm overflow-hidden">
               <button
                 onClick={() => { setShowTerminal(true); setMenuOpen(false); }}
                 className="w-full flex items-center gap-2.5 px-3 py-2.5 text-neutral-300 hover:bg-neutral-700 hover:text-white transition"
@@ -150,6 +202,12 @@ function ServerCard({
               >
                 <Activity size={13} /> Monitor
               </a>
+              <button
+                onClick={() => { setShowAgent((v) => !v); setMenuOpen(false); }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-emerald-400 hover:bg-neutral-700 transition"
+              >
+                <Bot size={13} /> {agentMode ? "Agent Setup" : "Enable Agent"}
+              </button>
               <div className="border-t border-neutral-700 my-1" />
               <button
                 onClick={() => { onEdit(server); setMenuOpen(false); }}
@@ -168,6 +226,58 @@ function ServerCard({
         </div>
       </div>
 
+      {/* Agent setup panel */}
+      {showAgent && (
+        <div className="mx-4 mb-3 bg-neutral-800/60 border border-neutral-700/60 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Bot size={14} className="text-emerald-400" />
+              <span className="text-sm font-semibold text-white">Metrics Agent</span>
+              {agentMode && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-900/40 border border-emerald-800 text-emerald-400">Active</span>}
+            </div>
+            <button onClick={() => setShowAgent(false)} className="text-neutral-500 hover:text-white">
+              <X size={14} />
+            </button>
+          </div>
+
+          {!agentMode ? (
+            <div>
+              <p className="text-xs text-neutral-400 mb-3 leading-relaxed">
+                Install a lightweight agent on this server. It pushes metrics to FleetOPS over HTTPS every 5 seconds —
+                <span className="text-white"> no SSH polling, no fail2ban risk.</span>
+              </p>
+              <button
+                onClick={enableAgent}
+                className="flex items-center gap-2 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold px-3 py-2 rounded-lg transition"
+              >
+                <Zap size={12} /> Enable Agent
+              </button>
+            </div>
+          ) : (
+            <div>
+              <p className="text-xs text-neutral-400 mb-2 leading-relaxed">
+                Run this command on <span className="text-white font-mono">{server.host}</span> once — installs as a systemd service:
+              </p>
+              <div className="bg-black rounded-lg p-3 flex items-start gap-2">
+                <pre className="text-[10px] font-mono text-green-400 flex-1 whitespace-pre-wrap break-all leading-relaxed">{installCmd}</pre>
+                <button onClick={copyCmd} className="shrink-0 p-1 text-neutral-500 hover:text-white transition">
+                  {copiedCmd ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
+                </button>
+              </div>
+              <div className="flex items-center gap-2 mt-3">
+                <p className="text-xs text-neutral-500 flex-1">To stop: <code className="font-mono text-neutral-400">sudo systemctl stop fleetops-agent</code></p>
+                <button
+                  onClick={disableAgent}
+                  className="text-xs text-red-400 hover:text-red-300 border border-red-900 hover:border-red-700 px-2 py-1 rounded-md transition"
+                >
+                  Disable
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Server meta row */}
       <div className="px-4 pb-3 flex flex-wrap gap-x-4 gap-y-1.5">
         <div className="flex items-center gap-1.5">
@@ -180,6 +290,12 @@ function ServerCard({
             <span className="text-xs text-yellow-500">No key assigned</span>
           )}
         </div>
+        {agentMode && (
+          <div className="flex items-center gap-1.5">
+            <Zap size={11} className="text-emerald-600 shrink-0" />
+            <span className="text-xs text-emerald-500">Push metrics active</span>
+          </div>
+        )}
         {server.created_at && (
           <div className="flex items-center gap-1.5">
             <Clock size={11} className="text-neutral-600 shrink-0" />

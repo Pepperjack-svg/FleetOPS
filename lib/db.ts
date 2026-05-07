@@ -79,6 +79,23 @@ if (!userCols.some((c: any) => c.name === "photo")) {
   db.prepare("ALTER TABLE users ADD COLUMN photo TEXT DEFAULT ''").run();
 }
 
+// Agent metrics table — stores latest pushed stats per server
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS agent_metrics (
+    server_id INTEGER PRIMARY KEY,
+    cpu       REAL DEFAULT 0,
+    ram_used  REAL DEFAULT 0,
+    ram_total REAL DEFAULT 1,
+    disk_used REAL DEFAULT 0,
+    disk_total REAL DEFAULT 1,
+    rx_rate   REAL DEFAULT 0,
+    tx_rate   REAL DEFAULT 0,
+    hostname  TEXT DEFAULT '',
+    last_seen INTEGER DEFAULT 0,
+    FOREIGN KEY (server_id) REFERENCES remote_servers(id) ON DELETE CASCADE
+  )
+`).run();
+
 // Migrations for existing databases
 const serverCols = db.prepare("PRAGMA table_info(remote_servers)").all() as any[];
 if (!serverCols.some((c: any) => c.name === "status")) {
@@ -86,6 +103,12 @@ if (!serverCols.some((c: any) => c.name === "status")) {
 }
 if (!serverCols.some((c: any) => c.name === "description")) {
   db.prepare("ALTER TABLE remote_servers ADD COLUMN description TEXT").run();
+}
+if (!serverCols.some((c: any) => c.name === "agent_token")) {
+  db.prepare("ALTER TABLE remote_servers ADD COLUMN agent_token TEXT").run();
+}
+if (!serverCols.some((c: any) => c.name === "agent_mode")) {
+  db.prepare("ALTER TABLE remote_servers ADD COLUMN agent_mode INTEGER DEFAULT 0").run();
 }
 if (!serverCols.some((c: any) => c.name === "created_at")) {
   db.prepare("ALTER TABLE remote_servers ADD COLUMN created_at DATETIME").run();

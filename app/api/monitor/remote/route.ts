@@ -3,9 +3,32 @@ import { Client } from "ssh2";
 import db from "@/lib/db";
 import { validateSession } from "@/lib/auth";
 import { cookies } from "next/headers";
+import { getMetrics, isOnline } from "@/lib/agentStore";
 
 // ── SSH connection pool ──────────────────────────────────────────────────────
 const connCache = new Map<number, Client>();
+
+// Failure backoff — tracks consecutive auth/connect failures per server.
+// After 3 failures, stop retrying for 10 minutes so we never trigger fail2ban.
+const failBackoff = new Map<number, { count: number; until: number }>();
+
+const BACKOFF_MS = [0, 30_000, 120_000, 600_000]; // 0s, 30s, 2m, 10m
+
+function recordFailure(id: number) {
+  const prev = failBackoff.get(id) ?? { count: 0, until: 0 };
+  const count = prev.count + 1;
+  const delay = BACKOFF_MS[Math.min(count, BACKOFF_MS.length - 1)];
+  failBackoff.set(id, { count, until: Date.now() + delay });
+}
+
+function resetFailure(id: number) {
+  failBackoff.delete(id);
+}
+
+function isBackedOff(id: number): boolean {
+  const f = failBackoff.get(id);
+  return !!f && Date.now() < f.until;
+}
 
 function evict(id: number) {
   const c = connCache.get(id);
@@ -338,6 +361,55 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  const sid = parseInt(serverId);
+
+  // ── Agent mode: serve pushed metrics, never SSH ───────────────────────────
+  if (server.agent_mode === 1) {
+    const m = getMetrics(sid);
+    if (!m) {
+      return NextResponse.json(
+        { error: "Agent not yet connected. Run the install command on the server." },
+        { status: 503 }
+      );
+    }
+    const online = isOnline(sid);
+    const fmtNet = (kbs: number) => kbs >= 1024 ? (kbs / 1024).toFixed(2) : kbs.toFixed(1);
+    const netUnit = (m.rxRate >= 1024 || m.txRate >= 1024) ? "MB/s" : "KB/s";
+    return NextResponse.json({
+      cpuUsage: m.cpu.toFixed(1),
+      memory: {
+        used: m.ramUsed.toFixed(2),
+        total: m.ramTotal.toFixed(2),
+      },
+      disk: {
+        used: m.diskUsed.toFixed(1),
+        total: m.diskTotal.toFixed(1),
+      },
+      networkIO: {
+        rx: fmtNet(m.rxRate),
+        tx: fmtNet(m.txRate),
+        unit: netUnit,
+      },
+      hostname: m.hostname,
+      serverName: server.name,
+      serverHost: server.host,
+      agentMode: true,
+      agentOnline: online,
+      agentLastSeen: m.lastSeen,
+    });
+  }
+
+  // ── Backoff guard — stop hammering a server that keeps rejecting auth ─────
+  // Prevents triggering fail2ban on the remote host.
+  if (isBackedOff(sid)) {
+    const f = failBackoff.get(sid)!;
+    const secsLeft = Math.ceil((f.until - Date.now()) / 1000);
+    return NextResponse.json(
+      { error: `Connection paused after repeated failures. Retrying in ${secsLeft}s. Check SSH key and username.` },
+      { status: 503 }
+    );
+  }
+
   try {
     const conn = await getConn(server, keyRow.private_key);
 
@@ -345,7 +417,6 @@ export async function GET(req: NextRequest) {
     let raw = await runScript(conn, DETECT_SCRIPT);
 
     let stats: Record<string, any>;
-    const id = parseInt(serverId);
 
     if (raw.includes("FLEETOPS_WIN") || (!raw.includes("FLEETOPS_OS") && !raw.trim())) {
       // Windows via PowerShell
@@ -368,17 +439,19 @@ export async function GET(req: NextRequest) {
       const parts = body.split("FLEETOPS_SEP").map((s) => s.trim()).slice(1);
 
       if (detectedOS === "Darwin") {
-        stats = parseMacOS(parts, id, server.host);
+        stats = parseMacOS(parts, sid, server.host);
       } else {
         // Linux (default for FreeBSD etc. too — /proc/stat based)
-        stats = parseLinux(parts, id);
+        stats = parseLinux(parts, sid);
       }
     }
 
-    applyNetRate(stats, id);
+    applyNetRate(stats, sid);
+    resetFailure(sid); // successful poll — clear any backoff
     return NextResponse.json({ ...stats, serverName: server.name, serverHost: server.host });
   } catch (err: any) {
-    evict(parseInt(serverId));
+    evict(sid);
+    recordFailure(sid); // increment backoff counter
     const msg: string = err.message || "SSH connection failed";
     let friendly = msg;
     if (msg.includes("authentication methods failed") || msg.includes("auth")) {
